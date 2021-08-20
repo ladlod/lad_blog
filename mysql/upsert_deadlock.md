@@ -1,0 +1,1 @@
+# 执行mysql upsert时发生deadlock错误排查
