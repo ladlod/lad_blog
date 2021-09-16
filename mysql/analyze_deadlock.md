@@ -1,5 +1,8 @@
 # mysql deadlock错误排查记录
 
+<div align='right'><b>auth:ladlod</b></div>
+
+**********************************************
 ## 问题
 使用on duplicate语句和唯一索引对数据进行upsert操作时报了deadlock
 ### table
