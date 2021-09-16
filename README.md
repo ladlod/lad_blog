@@ -6,6 +6,7 @@ ladlod个人博客
 ## mysql
 [死锁排查](mysql/analyze_deadlock.md)
 ## redis
+[dict源码分析](redis/dict_ana.md)
 
 ## 日常问题
 [缓存数据库一致性问题](common/cache_coherency.md)
