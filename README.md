@@ -1,5 +1,5 @@
 # lad_blog
-ladlod个人博客
+ladlod的日常瞎掰
 
 ## golang
 [slice相关问题排查-ladlod](golang/slice.md)
