@@ -23,13 +23,12 @@
 #### 串行化(serializable)
 所有事务严格按照串行执行。
 ## InnoDB事务隔离的实现
-### mysql的mvcc
 > 在 MySQL 中，实际上每条记录在更新的时候都会同时记录一条回滚操作。记录上的最新值，通过回滚操作，都可以得到前一个状态的值。因此，在不同时刻开启的事务都可以根据回滚记录获取到当前的读视图(read-view)。这种视图读的方式，即我们常说的多版本并发控制(Multi-Version Concurrency Control)。
-#### innodb的mvcc是怎么实现的？
+### innodb的mvcc是怎么实现的？
 !! 重点
-#### read committed和repeatable read是怎么实现的？
+### read committed和repeatable read是怎么实现的？
 innodb通过控制不同的视图创建时机，实现不同的隔离级别。在rc级别下，每次sql执行时创建read-view，在rr级别下，每个事务提交时创建read-view。
-#### mvcc是否可以彻底解决重复读和幻读的问题？
+### mvcc是否可以彻底解决重复读和幻读的问题？
 在前面我们了解到，mvcc使得我们的读操作最终执行为读取read-view，在rr隔离级别下，其它事务无法修改当前事务使用的read-view，所以对**快照读**这一类行为，mvcc可以解决幻读问题。那么是否有查询行为不读取read-view，而是执行**当前读**呢？实际上，在rr隔离级别下，除了普通的select操作，其余操作都是**当前读**。如
 
 ``` select ... lock in share mode ```
@@ -40,9 +39,48 @@ innodb通过控制不同的视图创建时机，实现不同的隔离级别。�
 
 我们使用一个case来具体看下，同时开启两个事务，在**快照读**时，事务1在事务2更新前后读取到的数据一致。而如果我们使用**当前读**，可以看到事务1在事务2更新后读取到的数据为最新数据。
 ![](assets/16667160080110.jpg)
-#### 幻读会造成什么影响？
-#### innodb怎么解决幻读？
+从上述结论可以看出，mvcc也并不能完全解决**重复读**和**幻读**的问题，那么innodb又是怎么解决这两个问题的呢？解决**重复读**并不难，在select语句中如果执行的是当前读，会对当前行上一个S锁，防止有另一个事务并发更新该行数据。但**幻读**是怎么解决的呢？
+### 幻读会造成什么影响？
+前面我们说到幻读会造成一个事务中前后两次范围查询的结果不同，但这到底会给我们的业务造成什么问题？话不多说直接上例子，还是刚刚的那张表```(a int, b int)```里面有两行数据```(1, 2), (2, 4)```
+|time |session1 |session2 |session3|
+|-|-|-|-|
+|t1 |```select * from t where a = 1 for update```|-|-|
+|t2 |-|```update t set a = 1 where b = 2```|-|
+|t3 |-|```commit```|-|
+|t4 |```select * from t where a = 1 for update```|-|-|
+|t5 |-|-|```insert into t values(1, 8)```|
+|t6 |-|-|```commit```|
+|t7 |```select * from t where a = 1 for update```|-|-|
+|t8 |```commit```|-|-|
 
+在t1时刻，我们读到的结果为(1,2)这一行数据；在t4时刻，我们读到的结果为(1,2), (1,4)这两行数据；在t7时刻，我们读到的结果为(1,2), (1,4), (1,8)这三行数据。
+
+由于我们的select语句都加了for update，按照**当前读**的逻辑，以上的三个结果看起来是符合预期的，并且也是合乎逻辑的，那么幻读到底有啥问题呢？
+
+**我们最终要保障的是数据一致性问题**，我们在上述流程中加上一条sql语句
+|time |session1 |session2 |session3|
+|-|-|-|-|
+|t1 |```select * from t where a = 1 for update```|-|-|
+|t2 |```update t set b = 0 where a = 1```|-|-|
+|t3 |-|```update t set a = 1 where b = 2```|-|
+|t4 |-|```commit```|-|
+|t5 |```select * from t where a = 1 for update```|-|-|
+|t6 |-|-|```insert into t values(1, 8)```|
+|t7 |-|-|```commit```|
+|t8 |```select * from t where a = 1 for update```|-|-|
+|t9 |```commit```|-|-|
+
+在t2时刻，数据库中的数据情况为(1,0),(2,4)；在t4时刻，数据库中的情况变为(1,0),(1,2)；在t7时刻，数据库中的情况变为(1,0),(1,2),(1,8)。
+
+而与此同时，binlog中写入的内容为
+```
+T4时刻session2提交：update t set a = 1 where b = 2
+T7时刻session3提交：insert into t values(1, 8)
+T9时刻session1提交：update t set b = 0 where a = 1
+```
+如果此时我们的数据库按照binlog进行了主从同步，那么从库中的数据将会变为(1,0),(1,0),(1,0)，很显然，这就是幻读造成的问题。
+### innodb怎么解决幻读？
+产生幻读的主要原因是，在我们进行**当前读**的时候，行锁只能锁住当前行，但插入记录这个动作无法上锁。因此，为了解决这个问题，innodb引入了间隙锁（Gap Lock），在执行**当前读**时，不只会给当前行上锁，还会给可能受到影响的行间隙上锁，这样也就确保了无法插入新的可能产生幻读的记录。mysql锁的种类及实现这里不做展开，后续有专题讲解。
 ## 事务的启动方式
 
 ## 案例case
