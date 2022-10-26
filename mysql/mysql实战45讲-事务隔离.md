@@ -1,7 +1,6 @@
 # mysql实战45讲-事务隔离
 ## 课前回顾
 ### Q1 innodb为什么需要redo log，使用bin log做容灾可以不？
-### Q2 db和缓存一致性如何保障？
 ## 基础概念
 > 在今天课程开始之前我们先复习一下一些基础概念
 ### 什么是事务
@@ -26,24 +25,98 @@
 #### 串行化(serializable)
 所有事务严格按照串行执行。
 ## InnoDB事务隔离的实现
-> 接下来正式开始我们今天的学习。在 MySQL 中，实际上每条记录在更新的时候都会同时记录一条回滚操作。记录上的最新值，通过回滚操作，都可以得到前一个状态的值。因此，在不同时刻开启的事务都可以根据回滚记录获取到当前的读视图(read-view)。这种视图读的方式，即我们常说的多版本并发控制(Multi-Version Concurrency Control)。
+接下来正式开始我们今天的学习。
+
+在**串行化**的隔离级别下，所有事务都是串行的，我们可以自然地想到对所有事务加表级的互斥锁即可实现。
+
+那**读提交**和**可重复读**是怎么实现的呢？首先提出一个快照的概念，mysql在事务的执行过程中，可以在任意节点对数据的当前状态做一个快照记录，后续的所有访问以快照的访问结果为准。但如果我们的表有100G，那岂不是每次事务处理过程都要拷贝100G的数据？实际上，mysql的事务实现并不需要拷贝整表的数据。
+
+在 MySQL 中，实际上每条记录在更新的时候都会同时记录一条回滚操作。记录上的最新值，通过回滚操作，都可以得到前一个状态的值。因此，在不同时刻开启的事务都可以根据回滚记录获取到当前的读视图(read-view)。这种视图读的方式，即我们常说的**多版本并发控制(Multi-Version Concurrency Control)**
 ### innodb的mvcc是怎么实现的？
-#### 几个关键概念
-##### 事务版本号
+#### 事务版本号
 事务每次开启时，都会从数据库获得一个自增长的事务ID，可以从事务ID判断事务的执行先后顺序。这就是事务版本号。
-##### 隐藏字段
+#### 隐藏字段
 在innodb中，每一行记录都有2个隐藏字段，trix_id和roll_pointer，如果数据表中存在主键或非null的unique索引则不会创建row_id，否则还会自动生成第3个隐藏字段，自增的隐藏主键row_id。
-- trix_id:记录该行数据最新一次修改事务的事务id
+- trx_id:记录生成该行数据的事务id
 - roll_pointer:回滚指针，指向该行记录的undo log
 - row_id:自增的隐藏主键id
-##### undo log
+#### undolog
+undo log可以理解成回滚日志,它存储的是老版本数据。在表记录修改之前，会先把原始数据拷贝到undo log里，如果事务回滚，即可以通过undo log来还原数据。或者如果当前记录行不可见，可以顺着undo log链找到满足其可见性条件的记录行版本。
 
-##### read view
-ReadView是事务在进行快照读的时候生成的记录快照, 可以帮助我们解决可见性问题。
-#### 源码解读
+在innodb中，undolog分为两类
+- insert undolog：事务对insert新记录时产生的undo log, 只在事务回滚时需要, 并且在事务提交后就可以立即丢弃。
+- update undolog：事务对记录进行delete和update操作时产生的undo log，不仅在事务回滚时需要，快照读也需要，只有当数据库所使用的快照中不涉及该日志记录，对应的回滚日志才会被删除。
+#### read view
+read view是事务在进行**快照读**的时候生成的记录快照, 可以帮助我们解决可见性问题。read view记录了快照生成时**当前事务开启时所有活跃的事务列表**。read view中包含一下几个关键属性
+- trx_ids：生成该read view时所有活跃的事务id list，不包含生成自己的事务id
+- low_limit_id：目前出现过的最大事务id+1，即下一个将被分配的事务id
+- up_limit_id：活跃事务列表中的最小事务id，若trx_ids为空，则为low_limit_id
+- creator_trx_id：生成该read view的事务id
+#### 实现原理
+![未命名文件 -1-](assets/%E6%9C%AA%E5%91%BD%E5%90%8D%E6%96%87%E4%BB%B6%20-1-.png)
+innodb在事务启动时，会为该事务创建一个read view，记录下当前的活跃事务信息。在读取数据时，会判断该行数据是否可见，若该版本数据不可见，则会遍历历史版本，知道找到可见版本。
 
+判断数据行是否可见的条件如下：
+1. 该行数据的trix_id等于read view的creator_trx_id，那么该行数据是由自身事务生成的，可见。
+2. 该行数据的trx_id小于read view的up_limit_id，那么该数据是在read view生成之前提交的，可见。
+3. 该行数据的trx_id大于等于read view的low_limit_id，那么该数据是在read view生成之后提交的，不可见。
+4. 该行数据的trx_id在read view的up_limit_id和low_limit_id之间，说明read view生成时，该事务可能处在活跃状态，则判断trx_id是否在read view的trx_ids中，若在，则不可见，反之则可见。
 ### read committed和repeatable read是怎么实现的？
-innodb通过控制不同的视图创建时机，实现不同的隔离级别。在rc级别下，每次sql执行时创建read-view，在rr级别下，每个事交时创建read-view。
+innodb通过控制不同的视图创建时机，实现不同的隔离级别。在rc级别下，每次select语句执行时生成read-view，在rr级别下，事务的第一个select语句执行时生成read-view。
+### mvcc关键代码
+#### read view(/storage/innobase/include/read0types.h)
+```
+class ReadView {
+  private:
+  /** The read should not see any transaction with trx id >= this
+  value. In other words, this is the "high water mark". */
+  trx_id_t m_low_limit_id;
+
+  /** The read should see all trx ids which are strictly
+  smaller (<) than this value.  In other words, this is the
+  low water mark". */
+  trx_id_t m_up_limit_id;
+
+  /** trx id of creating transaction, set to TRX_ID_MAX for free
+  views. */
+  trx_id_t m_creator_trx_id;
+
+  /** Set of RW transactions that was active when this snapshot
+  was taken */
+  ids_t m_ids;
+
+  /** The view does not need to see the undo logs for transactions
+  whose transaction number is strictly smaller (<) than this value:
+  they can be removed in purge if not needed by other views */
+  trx_id_t m_low_limit_no;
+  
+  /** Check whether the changes by id are visible.
+  @param[in]    id      transaction id to check against the view
+  @param[in]    name    table name
+  @return whether the view sees the modifications of id. */
+  [[nodiscard]] bool changes_visible(trx_id_t id,
+                                     const table_name_t &name) const {
+    ut_ad(id > 0); // 参数合法性校验
+
+    if (id < m_up_limit_id || id == m_creator_trx_id) {
+      return (true);
+    }
+
+    check_trx_id_sanity(id, name); // 判断trx_id合法性（是否超过当前系统已生成的最大事务id）
+
+    if (id >= m_low_limit_id) {
+      return (false);
+
+    } else if (m_ids.empty()) { // 不存在活跃中的事务
+      return (true);
+    }
+
+    const ids_t::value_type *p = m_ids.data();
+
+    return (!std::binary_search(p, p + m_ids.size(), id));
+  }
+}
+```
 ### mvcc是否可以彻底解决重复读和幻读的问题？如果解决了，那事务是不是就完全与世隔绝了？
 在前面我们了解到，mvcc使得我们的读操作最终执行为读取read-view，在rr隔离级别下，其它事务无法修改当前事务使用的read-view，所以对**快照读**这一类行为，mvcc可以解决幻读问题。那么是否有查询行为不读取read-view，而是执行**当前读**呢？实际上，在rr隔离级别下，除了普通的select操作，其余操作都是**当前读**。如
 
@@ -103,8 +176,8 @@ T9时刻session1提交：update t set b = 0 where a = 1
 2. set autocommit=0，这个命令会将这个线程的自动提交关掉。意味着如果你只执行一个 select 语句，这个事务就启动了，而且并不会自动提交。这个事务持续存在直到你主动执行 commit 或 rollback 语句，或者断开连接。
 
 有些客户端连接框架会默认连接成功后先执行一个 set autocommit=0 的命令。这就导致接下来的查询都在事务中，如果是长连接，就导致了意外的长事务。mysql45讲作者建议我们选择set autocommit=1，通过显式的语句来启动事务。
-## 小结
-本章中我们介绍了mysql的事务隔离，及innodb的mvcc实现原理，并根据实现原理分析了长事务存在的风险以及如何用正确的方式避免出现长事务。但对mvcc之外的事务隔离方式还没做出更加深入详细的解答，后续我们会在第八讲**事务到底是隔离的还是不隔离的**中更加深入地讨论这个问题。
-## 课后问题
-### Q3 你现在知道了系统里面应该避免长事务，如果你是业务开发负责人同时也是数据库负责人，你会有什么方案来避免出现或者处理这种情况呢？
-### Q4 你处理过的业务中，是否真的会遇到**不可重复读**/**幻读**的现象，在什么业务场景下我们才需要用到rr的隔离级别？
+## 小结&&问题
+本章中我们介绍了mysql的事务隔离，并简单介绍了innodb的mvcc实现原理，根据实现原理分析了长事务存在的风险以及如何用正确的方式避免出现长事务。在这里我们根据上述所讲抛出几个问题，并将在第八讲**事务到底是隔离的还是不隔离的**中更加深入地研究mysql的事务与隔离问题。
+### Q2 你现在知道了系统里面应该避免长事务，如果你是业务开发负责人同时也是数据库负责人，你会有什么方案来避免出现或者处理这种情况呢？
+### Q3 若在mysql中，我们只用using index语句查询索引数据，是否还需要回表查询？
+### Q4 undolog是否有持久化？不持久化的话什么时候清理？在这种机制下，慢查询会带来什么问题？
