@@ -5,6 +5,9 @@ ladlod的日常瞎掰
 [slice相关问题排查-ladlod](golang/slice.md)
 ## mysql
 [死锁排查-ladlod](mysql/analyze_deadlock.md)
+### mysql45讲专题
+[事务隔离](mysql/mysql实战45讲-事务隔离.md)
+[mysql为什么有时候会选错索引](mysql/mysql实战45讲-mysql为什么有时会选错索引.md)
 ## redis
 [dict源码分析-ladlod](redis/dict_ana.md)
 
