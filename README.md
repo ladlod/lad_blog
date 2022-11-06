@@ -7,10 +7,10 @@ ladlod的日常瞎掰
 [死锁排查-ladlod](mysql/analyze_deadlock.md)
 ### mysql45讲专题
 [事务隔离](mysql/mysql实战45讲-事务隔离.md)
+
 [mysql为什么有时候会选错索引](mysql/mysql实战45讲-mysql为什么有时会选错索引.md)
 ## redis
 [dict源码分析-ladlod](redis/dict_ana.md)
-
 ## 日常问题
 [缓存数据库一致性问题-ladlod](common/cache_coherency.md)
 ## 计算广告
