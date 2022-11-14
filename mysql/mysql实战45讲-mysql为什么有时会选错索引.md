@@ -181,3 +181,127 @@ mysql在预估二级索引执行计划成本时，查询一个区间内最左记
 ## 课后问题
 ### Q2 为什么mysql45讲作者给的例子同时开启了一个一致性视图，而我们后续的例子中不需要开启一致性视图就可以复现问题？
 ### Q3 在上文case中，为什么实际数据行数变为了2倍，而预测扫描的行数变为了4倍左右呢？（**此问题本人暂时也没有找到答案，大家感兴趣可以一起想一下，猜测与页分裂有关，提供答案者奖奶茶一杯**）
+#### case1(20w数据，每个二级索引节点对应两个主键id，查询10000条)
+```
+CREATE TABLE t (
+  id int(11) NOT NULL AUTO_INCREMENT,
+  a int(11) DEFAULT NULL,
+  b int(11) DEFAULT NULL,
+  PRIMARY KEY (id),
+  KEY a (a),
+  KEY b (b)
+) ENGINE=InnoDB;
+
+delimiter ;;
+create procedure idata()
+begin
+  declare i int;
+  set i=1;
+  while(i<=50000)do
+    insert into t values(null, i, i);
+    set i=i+1;
+  end while;
+end;;
+delimiter ;
+call idata();
+call idata();
+
+select * from t where a between 10000 and 20000;
+select * from information_schema.OPTIMIZER_TRACE\G;
+```
+![](assets/16684079272085.jpg)
+数据集为主键1~100000，a，b也为1~100000，主键100001~200000，a，b为1~100000。实际扫描20002行，mysql预估扫描37116行
+#### case2(10w数据，每个二级索引节点对应两个主键id，查询10000条)
+```
+CREATE TABLE t2 (
+  id int(11) NOT NULL AUTO_INCREMENT,
+  a int(11) DEFAULT NULL,
+  b int(11) DEFAULT NULL,
+  PRIMARY KEY (id),
+  KEY a (a),
+  KEY b (b)
+) ENGINE=InnoDB;
+
+delimiter ;;
+create procedure idata2()
+begin
+  declare i int;
+  set i=1;
+  while(i<=50000)do
+    insert into t2 values(null, i, i);
+    set i=i+1;
+  end while;
+end;;
+delimiter ;
+call idata2();
+call idata2();
+
+select * from t2 where a between 10000 and 20000;
+select * from information_schema.OPTIMIZER_TRACE\G;
+```
+![](assets/16684073014670.jpg)
+数据集为主键1~50000，a，b也为1~50000，主键50001~100000，a，b为1~50000。实际扫描20002行，mysql预估扫描37116行
+#### case3(20w数据，每个二级索引节点对应两个主键id，查询5000条)
+```
+CREATE TABLE t3 (
+  id int(11) NOT NULL AUTO_INCREMENT,
+  a int(11) DEFAULT NULL,
+  b int(11) DEFAULT NULL,
+  PRIMARY KEY (id),
+  KEY a (a),
+  KEY b (b)
+) ENGINE=InnoDB;
+
+delimiter ;;
+create procedure idata3()
+begin
+  declare i int;
+  set i=1;
+  while(i<=100000)do
+    insert into t3 values(null, i, i);
+    set i=i+1;
+  end while;
+end;;
+delimiter ;
+call idata3();
+call idata3();
+
+select * from t3 where a between 5000 and 10000;
+select * from information_schema.OPTIMIZER_TRACE\G;
+```
+![](assets/16684076423466.jpg)
+数据集为主键1~100000，a，b也为1~100000，主键100001~200000，a，b为1~100000。实际扫描10002行，mysql预估扫描18766行
+#### case4(20w数据，每个二级索引节点对应4个主键id，查询10000条)
+```
+CREATE TABLE t4 (
+  id int(11) NOT NULL AUTO_INCREMENT,
+  a int(11) DEFAULT NULL,
+  b int(11) DEFAULT NULL,
+  PRIMARY KEY (id),
+  KEY a (a),
+  KEY b (b)
+) ENGINE=InnoDB;
+
+delimiter ;;
+create procedure idata4()
+begin
+  declare i int;
+  set i=1;
+  while(i<=50000)do
+    insert into t4 values(null, i, i);
+    set i=i+1;
+  end while;
+end;;
+delimiter ;
+call idata4();
+call idata4();
+call idata4();
+call idata4();
+
+select * from t4 where a between 10000 and 20000;
+select * from information_schema.OPTIMIZER_TRACE\G;
+```
+![](assets/16684081801025.jpg)
+数据集为主键1~50000，a，b也为1~500000，主键50001~100000，a，b为1~500000，主键100001~150000，a，b为1~500000，主键150001~200000，a，b为1~500000，实际扫描20004行，mysql预估扫描78602行
+
+**根据以上4个case看起来，同一二级索引节点对应2个主键时，预估为实际扫描的2倍，同一二级索引节点对应4个主键时，预估为实际扫描的四倍，猜测预估的扫描行数与实际扫描行数之间的倍数关系和二级索引上对应的主键id个数有关系**
