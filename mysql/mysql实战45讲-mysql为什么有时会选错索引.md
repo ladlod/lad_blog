@@ -210,6 +210,7 @@ select * from t where a between 10000 and 20000;
 select * from information_schema.OPTIMIZER_TRACE\G;
 ```
 ![](assets/16684079272085.jpg)
+
 数据集为主键1-100000，a，b也为1-100000，主键100001-200000，a，b为1-100000。实际扫描20002行，mysql预估扫描37116行
 #### case2(10w数据，每个二级索引节点对应两个主键id，查询10000条)
 ```
@@ -240,6 +241,7 @@ select * from t2 where a between 10000 and 20000;
 select * from information_schema.OPTIMIZER_TRACE\G;
 ```
 ![](assets/16684073014670.jpg)
+
 数据集为主键1-50000，a，b也为1-50000，主键50001-100000，a，b为1-50000。实际扫描20002行，mysql预估扫描37116行
 #### case3(20w数据，每个二级索引节点对应两个主键id，查询5000条)
 ```
